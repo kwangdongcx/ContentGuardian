@@ -58,7 +58,7 @@
 						 
         
         const SHEET_URL = "https://docs.google.com/spreadsheets/d/1ccWpZql3gEdKqQIHZqkQ9rCyy_lG2IscNGwOu9Ot_dI/edit?usp=sharing"; 
-        const GEMINI_PROXY_URL = "/api/gemini"; // ← Vercel 프록시 주소로 교체
+        const GEMINI_PROXY_URL = "/api/gemini"; // 같은 Vercel 프로젝트에 호스팅 → 상대경로(CORS 불필요)
 
         // =========================================================================
 
@@ -104,6 +104,7 @@
 			const [reviewer, setReviewer]       = useState("");   // 검수 담당자명
 			const [vioComments, setVioComments] = useState({});   // { [violationIndex]: "소명 텍스트" }
 			const [reReviewing, setReReviewing] = useState(false);
+			const [reReviewImg, setReReviewImg] = useState(null); // 재검토용 수정 이미지 {name,url,mediaType,data}
 			
             const [tab, setTab]           = useState(0);
             const [guides, setGuides]     = useState([]);
@@ -493,8 +494,15 @@ ${ctx}
         const userText = `유형:${result.contentType}\n캠페인:${result.campaign}\n\n[원본 텍스트]\n${prevText}\n\n[1차 지적 및 담당자 소명]\n${contested}`;
 
         const parts = [{ text: userText }];
-        // 재검수 직후엔 imgs[0], 히스토리에서 열었으면 result.imageData 사용
-        const imgData = (imgs[0] && imgs[0].data) || result.imageData || "";
+        // 수정 이미지가 업로드됐으면 그걸 우선 사용, 없으면 원본 이미지
+        let imgData = "", imgIsRevised = false;
+        if (reReviewImg) {
+            const resized = await resizeImg(reReviewImg);
+            imgData = resized.data; imgIsRevised = true;
+        } else {
+            imgData = (imgs[0] && imgs[0].data) || result.imageData || "";
+        }
+        if (imgIsRevised) parts.push({ text: "[중요] 아래 첨부 이미지는 담당자가 1차 지적을 반영해 수정한 '수정본 이미지'입니다. 이 수정본을 기준으로 디자인·이미지 관련 지적을 다시 평가하세요." });
         if (imgData) parts.push({ inlineData: { mimeType: "image/jpeg", data: imgData } });
 
         const payload = {
@@ -546,12 +554,21 @@ ${ctx}
         await saveToSheet(newEntry);              // History에 새 라운드 행 append
         await logComments(newEntry, commentEntries); // Comments 시트 적재
         setVioComments({});
+        setReReviewImg(null);
     } catch (e) {
         alert("재검수 실패: " + (e.message || e));
     } finally {
         setReReviewing(false);
     }
 };				
+
+            const handleReReviewImg = files => {
+                const f = Array.from(files).find(x => x.type.startsWith("image/"));
+                if (!f) return;
+                const rd = new FileReader();
+                rd.onload = e => setReReviewImg({ name: f.name, url: e.target.result, mediaType: f.type, data: e.target.result.split(",")[1] });
+                rd.readAsDataURL(f);
+            };
 
             const handleFiles = files => Array.from(files).filter(f => f.type.startsWith("image/")).forEach(f => {
                 const rd = new FileReader();
@@ -992,17 +1009,31 @@ ${ctx}
                                             );
                                             })}
                                         </div>
-												<div className="mt-5 bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center gap-3">
-												  <input
-													value={reviewer} onChange={e => setReviewer(e.target.value)}
-													placeholder="검수 담당자명"
-													className="text-sm px-3 py-2 rounded-xl border border-slate-200 outline-none focus:border-brand-400 sm:w-48" />
-												  <button
-													onClick={reReview} disabled={reReviewing}
-													className="flex-1 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white px-6 py-3 rounded-xl text-sm font-semibold transition-colors shadow-sm">
-													{reReviewing ? "AI 재검수 중..." : "🔄 담당자 의견 반영하여 재검수"}
-												  </button>
-												</div>												
+												<div className="mt-5 bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-sm space-y-3">
+                                            {/* 수정 이미지 첨부 (선택) */}
+                                            <div className="flex items-center gap-3 flex-wrap">
+                                                <label className="cursor-pointer text-xs sm:text-sm font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 px-3 py-2 rounded-xl transition-colors shrink-0">
+                                                    📎 수정 이미지 첨부 (선택)
+                                                    <input type="file" accept="image/*" className="hidden" onChange={e => handleReReviewImg(e.target.files)} />
+                                                </label>
+                                                {reReviewImg ? (
+                                                    <div className="flex items-center gap-2">
+                                                        <img src={reReviewImg.url} alt="수정본" className="w-10 h-10 rounded-lg object-cover border border-slate-200" />
+                                                        <span className="text-xs text-slate-500 max-w-[160px] truncate">{reReviewImg.name}</span>
+                                                        <button onClick={() => setReReviewImg(null)} className="text-xs text-rose-500 hover:text-rose-600 font-semibold">제거</button>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-[11px] text-slate-400">이미지를 수정했다면 첨부하세요. 없으면 원본으로 재검토됩니다.</span>
+                                                )}
+                                            </div>
+                                            {/* 담당자명 + 재검수 버튼 */}
+                                            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                                                <input value={reviewer} onChange={e => setReviewer(e.target.value)} placeholder="검수 담당자명" className="text-sm px-3 py-2 rounded-xl border border-slate-200 outline-none focus:border-brand-400 sm:w-48" />
+                                                <button onClick={reReview} disabled={reReviewing} className="flex-1 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white px-6 py-3 rounded-xl text-sm font-semibold transition-colors shadow-sm">
+                                                    {reReviewing ? "AI 재검수 중..." : "🔄 담당자 의견·수정본 반영하여 재검수"}
+                                                </button>
+                                            </div>
+                                        </div>												
                                     </div>
                                 )}
                                 </>
